@@ -1,0 +1,12 @@
+15.10.2021 (DD/MM/YYYY) 0.1.1
+	Fixes
+		None
+	
+	Changes
+		- The Relay now makes better use of non blocking sockets. Until this update each 'send' call was repeated until WSAGetLastError no longer returned 10035. Duo to this a slower connection could slow down all other connections because the relay was stuck in this function. This was changed. The relay now keeps recieved data in a temporary buffer until the send of it succeeded. The relay also only Receives the next data once this buffer is emptied. So the relay doesnt accept more data then it can send.
+		
+	Upgrades
+		- Duo to the changes mentioned above the relay is better capable to manage a larger amount of connections and data send through them.
+		
+	Remarks
+		- Beaware that the Relay makes no use of 'select' yet so tunneling thousands of connections through it can become an issue. Besides that sockets used to 'connect' are yet still blocking. So connection attempts from the relay to the set destination will still lag the whole relay, especially on very slow or not responding servers.

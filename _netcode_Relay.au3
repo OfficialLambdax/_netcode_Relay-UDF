@@ -27,6 +27,7 @@
 
 Global $__net_relay_arTCPSockets[0]
 Global $__net_relay_arUDPSockets[0]
+Global Const $__net_relay_UDFVersion = "0.1.1"
 
 
 Func _netcode_SetupTCPRelay($sRelayIP, $sRelayPort, $sRelayToIP, $sRelayToPort)
@@ -116,6 +117,10 @@ Func __netcode_AddTCPRelayClient($hRelaySocket, $arClients, $hSocket, $hSocketTo
 	$arClients[$nArSize][1] = $hSocketTo
 
 	_storageS_Overwrite($hRelaySocket, '_netcode_relay_Clients', $arClients)
+
+	; add temp storage vars
+	_storageS_Overwrite($hSocket, '_netcode_relay_buffer', '')
+	_storageS_Overwrite($hSocketTo, '_netcode_relay_buffer', '')
 EndFunc
 
 Func __netcode_RemoveTCPRelayClient($hRelaySocket, $arClients, $nIndex)
@@ -123,6 +128,10 @@ Func __netcode_RemoveTCPRelayClient($hRelaySocket, $arClients, $nIndex)
 
 	__netcode_TCPCloseSocket($arClients[$nIndex][0])
 	__netcode_TCPCloseSocket($arClients[$nIndex][1])
+
+	; tidy temp storage vars
+	_storageS_TidyGroupVars($arClients[$nIndex][0])
+	_storageS_TidyGroupVars($arClients[$nIndex][1])
 
 	$arClients[$nIndex][0] = $arClients[$nArSize - 1][0]
 	$arClients[$nIndex][1] = $arClients[$nArSize - 1][1]
@@ -196,7 +205,8 @@ Func __netcode_RelayTCPLoop($hRelaySocket)
 
 EndFunc
 
-Func __netcode_RelayRecvAndSend($hSocket, $hSocketTo)
+#cs
+Func __netcode_RelayRecvAndSend_Backup($hSocket, $hSocketTo)
 ;~ 	Local $sPackages = __netcode_RelayRecvPackages($hSocket)
 	Local $sPackages = __netcode_RecvPackages($hSocket)
 	if @error Then Return False
@@ -204,6 +214,31 @@ Func __netcode_RelayRecvAndSend($hSocket, $hSocketTo)
 
 	Local $nBytes = __netcode_TCPSend($hSocketTo, StringToBinary($sPackages))
 	$nError = @error
+;~ 	if $nError Then MsgBox(0, "", $nError)
+	if $nError Then Return False
+
+	Return SetError(0, $nBytes, True)
+EndFunc
+#ce
+
+Func __netcode_RelayRecvAndSend($hSocket, $hSocketTo)
+;~ 	Local $sPackages = __netcode_RelayRecvPackages($hSocket)
+
+	Local $sPackages = _storageS_Read($hSocket, '_netcode_relay_buffer')
+	if $sPackages = "" Then
+		$sPackages = __netcode_RecvPackages($hSocket)
+		if @error Then Return False
+		if $sPackages = '' Then Return True
+
+		_storageS_Overwrite($hSocket, '_netcode_relay_buffer', $sPackages)
+	EndIf
+
+	Local $nBytes = __netcode_TCPSend($hSocketTo, StringToBinary($sPackages), False)
+	Local $nError = @error
+	if $nError <> 10035 Then
+		_storageS_Overwrite($hSocket, '_netcode_relay_buffer', '')
+		$nError = 0
+	EndIf
 ;~ 	if $nError Then MsgBox(0, "", $nError)
 	if $nError Then Return False
 
