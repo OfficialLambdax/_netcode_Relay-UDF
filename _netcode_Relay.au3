@@ -1,306 +1,358 @@
 #include-once
-#include "_netcode_Core.au3"
+#include "_netcode_AddonCore.au3"
+
 
 #cs
-	Todo
 
-		- UDP (?)
+	Requires the _netcode_AddonCore.au3 UDF and _netcode_Core.au3 UDF.
 
-		- Man in the Middle
-
-		- Optional SOCKS5 Authentication for compatibility
-
-		- Reduce CPU usage
-			The relay can relay really fast. I think a Gb bandwith isnt a problem for this. However if the relay is
-			used just a little or not used at all it will still spam the hell out of Ws2_32.dll.
-			Placing a Sleep(10) will just create lag. It wouldnt be a intelligent solution. Something else must be used.
-			Something taking the current usage in account or that can react imidiatly when something is coming through.
-
-		- Add Select() for performance
-
-		- Add Black and Whitelists for Incomming Connections
-
+	TCP-IPv4, for the time being, only.
 
 #ce
 
+Global $__net_Relay_sAddonVersion = "0.2"
 
 
-Global $__net_relay_arTCPSockets[0]
-Global $__net_relay_arUDPSockets[0]
-Global Const $__net_relay_UDFVersion = "0.1.1"
+Func _netcode_Relay_Startup()
+	_netcode_Startup() ; it doesnt matter that it might was already called, because it just returns if it already was
 
+	Local $arParents = __netcode_Addon_GetSocketList('RelayParents')
+	If IsArray($arParents) Then Return False
 
-Func _netcode_SetupTCPRelay($sRelayIP, $sRelayPort, $sRelayToIP, $sRelayToPort)
-	__netcode_Init()
-	Local $hRelaySocket = _netcode_TCPListen($sRelayPort, $sRelayIP, Default, 200, True)
-	if $hRelaySocket = False Then Return SetError(1)
+	__netcode_Addon_CreateSocketList('RelayParents')
 
-	__netcode_AddTCPRelaySocket($hRelaySocket, $sRelayToIP, $sRelayToPort)
-
-	Return $hRelaySocket
-EndFunc
-
-Func _netcode_SetupUDPRelay($sRelayPort, $sRelayToIP, $sRelayToPort)
-
-EndFunc
-
-Func _netcode_RelaySetIPList($hRelaySocket, $vIPList, $bIPListIsWhitelist)
-
-EndFunc
-
-Func _netcode_StopTCPRelay($hRelaySocket)
-	If Not __netcode_RemoveTCPRelaySocket($hRelaySocket) Then Return SetError(@error)
-	__netcode_TCPCloseSocket($hRelaySocket)
+	__netcode_Addon_Log(0, 1)
 	Return True
 EndFunc
 
-Func _netcode_RelayLoop($bLoopForever = False)
-	Local $nTCPArSize = UBound($__net_relay_arTCPSockets)
-	Local $nUDPArSize = UBound($__net_relay_arUDPSockets)
-	Local $nSendBytes = 0
+Func _netcode_Relay_Shutdown()
+	; closes each and every client and parent and wipes everything clean
 
-	Do
-		$nSendBytes = 0
-		For $i = 0 To $nTCPArSize - 1
-			$nSendBytes += __netcode_RelayTCPLoop($__net_relay_arTCPSockets[$i])
+;~ 	__netcode_Addon_Log(0, 2)
+EndFunc
 
-			; ~ todo relay UDP
+
+; if no socket is given then all parent sockets are looped
+Func _netcode_Relay_Loop(Const $hSocket = False)
+
+	if $hSocket Then
+		__netcode_Relay_Loop($hSocket)
+	Else
+		Local $arParents = __netcode_Addon_GetSocketList('RelayParents')
+
+		For $i = 0 To UBound($arParents) - 1
+			__netcode_Relay_Loop($arParents[$i])
+		Next
+	EndIf
+
+EndFunc
+
+
+Func _netcode_Relay_Create($sOpenOnIP, $nOpenOnPort, $sRelayToIP, $nRelayToPort)
+
+	; start listener
+	Local $hSocket = __netcode_TCPListen($sOpenOnIP, $nOpenOnPort, Default)
+	Local $nError = @error
+	If $nError Then
+		__netcode_Addon_Log(0, 3, $hSocket)
+		Return SetError(1, $nError, False)
+	EndIf
+
+	; add to parent socket list
+	If Not __netcode_Addon_AddToSocketList('RelayParents', $hSocket) Then
+		__netcode_TCPCloseSocket($hSocket)
+		__netcode_Addon_Log(0, 3, $hSocket)
+		Return SetError(2, 0, False)
+	EndIf
+
+	; create socket list for the incoming pending clients
+	__netcode_Addon_CreateSocketList($hSocket & '_IncomingPending')
+
+	; create socket list for the outgoing pending clients (aka connect clients)
+	__netcode_Addon_CreateSocketList($hSocket & '_OutgoingPending')
+
+	; create socket list for all clients
+	__netcode_Addon_CreateSocketList($hSocket)
+
+	; save relay information
+	Local $arRelayDestination[2] = [$sRelayToIP,$nRelayToPort]
+	__netcode_Addon_SetVar($hSocket, 'RelayDestination', $arRelayDestination)
+
+	__netcode_Addon_Log(0, 2, $hSocket)
+
+	Return $hSocket
+
+EndFunc
+
+Func _netcode_Relay_Close(Const $hSocket)
+
+	Local $arClients = __netcode_Addon_GetSocketList($hSocket)
+	If Not IsArray($arClients) Then
+		__netcode_Addon_Log(0, 5, $hSocket)
+		Return SetError(1, 0, False) ; unknown relay
+	EndIf
+
+	; close and wipe incoming pending list
+	__netcode_Addon_WipeSocketList($hSocket & '_IncomingPending')
+
+	; close and wipe outgoing pending list
+	__netcode_Addon_WipeSocketList($hSocket & '_OutgoingPending')
+
+	; close all clients and wipe the vars
+	__netcode_Addon_WipeSocketList($hSocket)
+
+	; close the relay listener
+	__netcode_TCPCloseSocket($hSocket)
+
+	; remove it from the parent list
+	__netcode_Addon_RemoveFromSocketList('RelayParents', $hSocket)
+
+	__netcode_Addon_Log(0, 4, $hSocket)
+
+	Return True
+EndFunc
+
+
+
+
+
+
+; accepts new clients
+; connects non blocking to the destination
+; and then adds both together
+Func __netcode_Relay_Loop(Const $hSocket)
+
+	; check for new incoming connections. a single per loop
+	Local $hIncomingSocket = __netcode_TCPAccept($hSocket)
+	if $hIncomingSocket <> -1 Then __netcode_Relay_NewIncoming($hSocket, $hIncomingSocket)
+
+	; check pending incoming for disconnects
+;~ 	__netcode_Relay_CheckIncoming($hSocket)
+
+	; check pending outgoing for timeouts or successfully connects
+	__netcode_Relay_CheckOutgoing($hSocket)
+
+	; recv and send data
+	__netcode_Relay_RecvAndSend($hSocket)
+
+EndFunc
+
+Func __netcode_Relay_NewIncoming(Const $hSocket, $hIncomingSocket)
+
+	__netcode_Addon_Log(0, 10, $hIncomingSocket)
+
+	; add to pending list
+	__netcode_Addon_AddToSocketList($hSocket & '_IncomingPending', $hIncomingSocket)
+
+	; get relay destination
+	Local $arRelayDestination = __netcode_Addon_GetVar($hSocket, 'RelayDestination')
+
+	; connect non blocking
+	Local $hOutgoingSocket = __netcode_TCPConnect($arRelayDestination[0], $arRelayDestination[1], 2, True)
+
+	; add to pending list
+	__netcode_Addon_AddToSocketList($hSocket & '_OutgoingPending', $hOutgoingSocket)
+
+	; init timer for timeout
+	__netcode_Addon_SetVar($hOutgoingSocket, 'ConnectTimer', TimerInit())
+
+	; link them already together
+	__netcode_Addon_SetVar($hIncomingSocket, 'Link', $hOutgoingSocket)
+	__netcode_Addon_SetVar($hOutgoingSocket, 'Link', $hIncomingSocket)
+
+	__netcode_Addon_Log(0, 11, $arRelayDestination[0] & ':' & $arRelayDestination[1])
+
+EndFunc
+
+#cs
+Func __netcode_Relay_CheckIncoming(Const $hSocket)
+
+	; get incoming socket list
+	Local $arClients = __netcode_Addon_GetSocketList($hSocket & '_IncomingPending')
+	if UBound($arClients) = 0 Then Return
+
+	; select
+	$arClients = __netcode_SocketSelect($arClients, True)
+	Local $nArSize = UBound($arClients)
+
+	If $nArSize = 0 Then Return
+
+	Local $hOutgoingSocket = 0
+
+	; for each select socket
+	For $i = 0 To $nArSize - 1
+
+		; check connection
+		__netcode_Addon_TCPRecv($arClients[$i], 1)
+
+		; if disconnected then
+		Switch @error
+
+			Case 1, 10050 To 10054
+
+				; get linked outgoing socket
+				$hOutgoingSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
+
+				; close both
+				__netcode_TCPCloseSocket($arClients[$i])
+				__netcode_TCPCloseSocket($hOutgoingSocket)
+
+				; remove the incoming and outgoing socket
+				__netcode_Addon_RemoveFromSocketList($hSocket & '_IncomingPending', $arClients[$i])
+				__netcode_Addon_RemoveFromSocketList($hSocket & '_OutgoingPending', $hOutgoingSocket)
+
+				; tidy both socket vars
+				_storageS_TidyGroupVars($arClients[$i])
+				_storageS_TidyGroupVars($hOutgoingSocket)
+
+		EndSwitch
+
+	Next
+
+EndFunc
+#ce
+
+Func __netcode_Relay_CheckOutgoing(Const $hSocket)
+
+	; get outgoing socket list
+	Local $arClients = __netcode_Addon_GetSocketList($hSocket & '_OutgoingPending')
+	If UBound($arClients) = 0 Then Return
+
+	; select
+	$arClients = __netcode_SocketSelect($arClients, False)
+	Local $nArSize = UBound($arClients)
+	Local $hIncomingSocket = 0
+
+	; if sockets have successfully connected
+	If $nArSize > 0 Then
+
+
+		For $i = 0 To $nArSize - 1
+
+			__netcode_Addon_Log(0, 12, $arClients[$i])
+
+			; get incoming socket
+			$hIncomingSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
+
+			; add both to the clients list
+			__netcode_Addon_AddToSocketList($hSocket, $arClients[$i])
+			__netcode_Addon_AddToSocketList($hSocket, $hIncomingSocket)
+
+			; remove both from the pending lists
+			__netcode_Addon_RemoveFromSocketList($hSocket & '_OutgoingPending', $arClients[$i])
+			__netcode_Addon_RemoveFromSocketList($hSocket & '_IncomingPending', $hIncomingSocket)
+
+			__netcode_Addon_Log(0, 13, $hIncomingSocket, $arClients[$i])
+
 		Next
 
-;~ 		if $nSendBytes = 0 Then Sleep(10)
-	Until Not $bLoopForever
-EndFunc
-
-Func __netcode_AddTCPRelaySocket($hRelaySocket, $sRelayToIP, $sRelayToPort)
-	_storageS_Overwrite($hRelaySocket, '_netcode_relay_RelayToIP', $sRelayToIP)
-	_storageS_Overwrite($hRelaySocket, '_netcode_relay_RelayToPort', $sRelayToPort)
-
-	Local $arClients[0][2]
-	_storageS_Overwrite($hRelaySocket, '_netcode_relay_Clients', $arClients)
-
-	Local $nArSize = UBound($__net_relay_arTCPSockets)
-
-	ReDim $__net_relay_arTCPSockets[$nArSize + 1]
-	$__net_relay_arTCPSockets[$nArSize] = $hRelaySocket
-EndFunc
-
-Func __netcode_RemoveTCPRelaySocket($hRelaySocket)
-	Local $nArSize = UBound($__net_relay_arTCPSockets)
-
-	Local $nIndex = -1
-	For $i = 0 To $nArSize - 1
-		if $__net_relay_arTCPSockets[$i] = $hRelaySocket Then
-			$nIndex = $i
-			ExitLoop
-		EndIf
-	Next
-	if $nIndex = -1 Then Return SetError(1) ; this isnt a relay socket
-
-	_storageS_TidyGroupVars($hRelaySocket)
-
-	$__net_relay_arTCPSockets[$nIndex] = $__net_relay_arTCPSockets[$nArSize - 1]
-	ReDim $__net_relay_arTCPSockets[$nArSize - 1]
-
-	Return True
-EndFunc
-
-Func __netcode_CheckRelayIPList($hRelaySocket, $hSocket)
-	; ~ todo
-	Return True
-EndFunc
-
-Func __netcode_AddTCPRelayClient($hRelaySocket, $arClients, $hSocket, $hSocketTo)
-	Local $nArSize = UBound($arClients)
-
-	ReDim $arClients[$nArSize + 1][2]
-	$arClients[$nArSize][0] = $hSocket
-	$arClients[$nArSize][1] = $hSocketTo
-
-	_storageS_Overwrite($hRelaySocket, '_netcode_relay_Clients', $arClients)
-
-	; add temp storage vars
-	_storageS_Overwrite($hSocket, '_netcode_relay_buffer', '')
-	_storageS_Overwrite($hSocketTo, '_netcode_relay_buffer', '')
-EndFunc
-
-Func __netcode_RemoveTCPRelayClient($hRelaySocket, $arClients, $nIndex)
-	Local $nArSize = UBound($arClients)
-
-	__netcode_TCPCloseSocket($arClients[$nIndex][0])
-	__netcode_TCPCloseSocket($arClients[$nIndex][1])
-
-	; tidy temp storage vars
-	_storageS_TidyGroupVars($arClients[$nIndex][0])
-	_storageS_TidyGroupVars($arClients[$nIndex][1])
-
-	$arClients[$nIndex][0] = $arClients[$nArSize - 1][0]
-	$arClients[$nIndex][1] = $arClients[$nArSize - 1][1]
-	ReDim $arClients[$nArSize - 1][2]
-
-	_storageS_Overwrite($hRelaySocket, '_netcode_relay_Clients', $arClients)
-EndFunc
-
-Func __netcode_RelayTCPLoop($hRelaySocket)
-
-	Local $arClients = _storageS_Read($hRelaySocket, '_netcode_relay_Clients')
-
-	Local $hSocket = __netcode_TCPAccept($hRelaySocket)
-	if $hSocket <> -1 Then
-		__netcode_RelayDebug($hRelaySocket, 1, $hSocket)
-
-		if __netcode_CheckRelayIPList($hRelaySocket, $hSocket) Then
-			Local $sRelayToIP = _storageS_Read($hRelaySocket, '_netcode_relay_RelayToIP')
-			Local $sRelayToPort = _storageS_Read($hRelaySocket, '_netcode_relay_RelayToPort')
-
-			Local $hSocketTo = __netcode_TCPConnect($sRelayToIP, $sRelayToPort)
-			if $hSocketTo <> -1 Then
-				__netcode_AddTCPRelayClient($hRelaySocket, $arClients, $hSocket, $hSocketTo)
-				__netcode_RelayDebug($hRelaySocket, 3, $hSocket, $hSocketTo)
-
-			Else
-				__netcode_TCPCloseSocket($hSocket)
-				__netcode_RelayDebug($hRelaySocket, 2, $hSocket)
-
-			EndIf
-
-		Else
-			__netcode_TCPCloseSocket($hSocket)
-			__netcode_RelayDebug($hRelaySocket, 6, $hSocket)
-
-		EndIf
 	EndIf
 
-	Local $nArSize = UBound($arClients)
-	Local $nSendBytes = 0
+	; reread the outgoing socket list
+	$arClients = __netcode_Addon_GetSocketList($hSocket & '_OutgoingPending')
+	$nArSize = UBound($arClients)
+
+	if $nArSize = 0 Then Return
+
+	; check timeouts
+	Local $hTimer = 0
 
 	For $i = 0 To $nArSize - 1
-		; read from incomming and send to outgoing
-		If Not __netcode_RelayRecvAndSend($arClients[$i][0], $arClients[$i][1]) Then
-			__netcode_RemoveTCPRelayClient($hRelaySocket, $arClients, $i)
-			__netcode_RelayDebug($hRelaySocket, 4, $arClients[$i][0], $arClients[$i][1])
-			ContinueLoop
 
-		Else
-			$nBytes = @extended
-			$nSendBytes += $nBytes
-			if $nBytes > 0 Then __netcode_RelayDebug($hRelaySocket, 5, $arClients[$i][0], $arClients[$i][1], $nBytes)
+		; get timer
+		$hTimer = __netcode_Addon_GetVar($arClients[$i], 'ConnectTimer')
+
+		; check timeout
+		if TimerDiff($hTimer) > 2000 Then
+
+			__netcode_Addon_Log(0, 14, $arClients[$i])
+
+			; get incoming socket
+			$hIncomingSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
+
+			; close both
+			__netcode_TCPCloseSocket($arClients[$i])
+			__netcode_TCPCloseSocket($hIncomingSocket)
+
+			; remove both
+			__netcode_Addon_RemoveFromSocketList($hSocket & '_OutgoingPending', $arClients[$i])
+			__netcode_Addon_RemoveFromSocketList($hSocket & '_IncomingPending', $hIncomingSocket)
+
+			; tidy both
+			_storageS_TidyGroupVars($arClients[$i])
+			_storageS_TidyGroupVars($hIncomingSocket)
+
+			__netcode_Addon_Log(0, 15, $hIncomingSocket)
 
 		EndIf
 
-		; read from outgoing and send to incomming
-		if Not __netcode_RelayRecvAndSend($arClients[$i][1], $arClients[$i][0]) Then
-			__netcode_RemoveTCPRelayClient($hRelaySocket, $arClients, $i)
-			__netcode_RelayDebug($hRelaySocket, 4, $arClients[$i][1], $arClients[$i][0])
-			ContinueLoop
-
-		Else
-			$nBytes = @extended
-			$nSendBytes += $nBytes
-			if $nBytes > 0 Then __netcode_RelayDebug($hRelaySocket, 5, $arClients[$i][1], $arClients[$i][0], $nBytes)
-
-		EndIf
 	Next
 
-	Return $nSendBytes
-
 EndFunc
 
-#cs
-Func __netcode_RelayRecvAndSend_Backup($hSocket, $hSocketTo)
-;~ 	Local $sPackages = __netcode_RelayRecvPackages($hSocket)
-	Local $sPackages = __netcode_RecvPackages($hSocket)
-	if @error Then Return False
-	if $sPackages = '' Then Return True
+Func __netcode_Relay_RecvAndSend(Const $hSocket)
 
-	Local $nBytes = __netcode_TCPSend($hSocketTo, StringToBinary($sPackages))
-	$nError = @error
-;~ 	if $nError Then MsgBox(0, "", $nError)
-	if $nError Then Return False
+	; get sockets
+	Local $arClients = __netcode_Addon_GetSocketList($hSocket)
+	if UBound($arClients) = 0 Then Return
 
-	Return SetError(0, $nBytes, True)
-EndFunc
-#ce
+	; select these that have something received or that are disconnected
+	$arClients = __netcode_SocketSelect($arClients, True)
+	Local $nArSize = UBound($arClients)
+	if $nArSize = 0 Then Return
 
-Func __netcode_RelayRecvAndSend($hSocket, $hSocketTo)
-;~ 	Local $sPackages = __netcode_RelayRecvPackages($hSocket)
+	; get the linked sockets
+	Local $arSockets[$nArSize]
+	For $i = 0 To $nArSize - 1
+		$arSockets[$i] = __netcode_Addon_GetVar($arClients[$i], 'Link')
+	Next
 
-	Local $sPackages = _storageS_Read($hSocket, '_netcode_relay_buffer')
-	if $sPackages = "" Then
-		$sPackages = __netcode_RecvPackages($hSocket)
-		if @error Then Return False
-		if $sPackages = '' Then Return True
+	; filter the linked sockets, for those that are send ready
+	$arClients = __netcode_SocketSelect($arSockets, False)
+	Local $nArSize = UBound($arClients)
 
-		_storageS_Overwrite($hSocket, '_netcode_relay_buffer', $sPackages)
-	EndIf
+	if $nArSize = 0 Then Return
 
-	Local $nBytes = __netcode_TCPSend($hSocketTo, StringToBinary($sPackages), False)
-	Local $nError = @error
-	if $nError <> 10035 Then
-		_storageS_Overwrite($hSocket, '_netcode_relay_buffer', '')
-		$nError = 0
-	EndIf
-;~ 	if $nError Then MsgBox(0, "", $nError)
-	if $nError Then Return False
+	Local $sData = ""
+	Local $hLinkSocket = 0
 
-	Return SetError(0, $nBytes, True)
-EndFunc
+	; recv and send
+	For $i = 0 To $nArSize - 1
 
-Func __netcode_RelayRecvPackages(Const $hSocket)
-	Local $sPackages = ''
-	Local $sTCPRecv = ''
-	Local $hTimer = TimerInit()
+		; get the socket that had something to be received
+		$hLinkSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
 
-	Do
+		; get the recv buffer
+		$sData = __netcode_Addon_RecvPackages($hLinkSocket)
 
-		$sTCPRecv = __netcode_TCPRecv($hSocket)
-		if @extended = 1 Then
-			if $sPackages <> '' Then ExitLoop ; in case the client send something and then closed his socket instantly.
-			Return SetError(1, 0, False)
+		; check if we disconnected
+		if @error Then
+
+			__netcode_TCPCloseSocket($arClients[$i])
+			__netcode_TCPCloseSocket($hLinkSocket)
+
+			__netcode_Addon_RemoveFromSocketList($hSocket, $arClients[$i])
+			__netcode_Addon_RemoveFromSocketList($hSocket, $hLinkSocket)
+
+			_storageS_TidyGroupVars($arClients[$i])
+			_storageS_TidyGroupVars($hLinkSocket)
+
+			__netcode_Addon_Log(0, 15, $arClients[$i])
+			__netcode_Addon_Log(0, 15, $hLinkSocket)
+
+			ContinueLoop
+
 		EndIf
 
-		$sPackages &= BinaryToString($sTCPRecv)
-		; todo ~ check size and if it exceeds the max Recv Buffer Size
-		; if then just Exitloop instead of discarding it
+		__netcode_Addon_Log(0, 16, $hLinkSocket, $arClients[$i], @extended)
 
-		if TimerDiff($hTimer) > 20 Then ExitLoop
+		; send the data non blocking
+		__netcode_TCPSend($arClients[$i], StringToBinary($sData), False)
 
-	Until $sTCPRecv = ''
-
-	Return $sPackages
-EndFunc
-
-#cs
-	$nInformation
-	1 = new connection
-	2 = Couldnt connect
-	3 = bind to
-	4 = disconnected
-	5 = send bytes
-	6 = incoming is blocked
-
-#ce
-Func __netcode_RelayDebug($hRelaySocket, $nInformation, $Element0, $Element1 = "", $Element2 = "")
-
-	Switch $nInformation
-		Case 1
-			__netcode_Debug("Relay @ " & $hRelaySocket & " New Incomming Connection @ " & $Element0)
-
-		Case 2
-			__netcode_Debug("Relay @ " & $hRelaySocket & " Couldnt connect to Relay Destination. Disconnected incomming @ " & $Element0)
-
-		Case 3
-			__netcode_Debug("Relay @ " & $hRelaySocket & " Bind @ " & $Element0 & " To @ " & $Element1)
-
-		Case 4
-			__netcode_Debug("Relay @ " & $hRelaySocket & " Disconnected @ " & $Element0 & " & @ " & $Element1)
-
-		Case 5
-			__netcode_Debug("Relay @ " & $hRelaySocket & " Send Data from @ " & $Element0 & " To @ " & $Element1 & " = " & Round($Element2 / 1024, 2) & " KB")
-
-		Case 6
-			__netcode_Debug("Relay @ " & $hRelaySocket & " Incomming Connection was blocked @ " & $Element0)
-
-	EndSwitch
-
+	Next
 
 EndFunc
+
+
+
+
