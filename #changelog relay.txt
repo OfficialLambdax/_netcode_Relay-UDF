@@ -1,3 +1,9 @@
+29.01.2022 (DD/MM/YYYY) 0.2.1
+
+	Fixes
+		- __netcode_Relay_RecvAndSend() sending zero received bytes
+
+
 28.01.2022 (DD/MM/YYYY) 0.2
 	
 	SCRIPT BREAKING CHANGES

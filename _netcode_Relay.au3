@@ -10,7 +10,7 @@
 
 #ce
 
-Global $__net_Relay_sAddonVersion = "0.2"
+Global $__net_Relay_sAddonVersion = "0.2.1"
 
 
 Func _netcode_Relay_Startup()
@@ -315,6 +315,7 @@ Func __netcode_Relay_RecvAndSend(Const $hSocket)
 
 	Local $sData = ""
 	Local $hLinkSocket = 0
+	Local $nLen = 0
 
 	; recv and send
 	For $i = 0 To $nArSize - 1
@@ -344,10 +345,15 @@ Func __netcode_Relay_RecvAndSend(Const $hSocket)
 
 		EndIf
 
-		__netcode_Addon_Log(0, 16, $hLinkSocket, $arClients[$i], @extended)
+		$nLen = @extended
+		If $nLen Then
 
-		; send the data non blocking
-		__netcode_TCPSend($arClients[$i], StringToBinary($sData), False)
+			__netcode_Addon_Log(0, 16, $hLinkSocket, $arClients[$i], $nLen)
+
+			; send the data non blocking
+			__netcode_TCPSend($arClients[$i], StringToBinary($sData), False)
+
+		EndIf
 
 	Next
 
