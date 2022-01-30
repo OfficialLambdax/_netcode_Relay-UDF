@@ -10,3 +10,4 @@ https://github.com/OfficialLambdax/_netcode_Core-UDF
 The same describition of the Core UDF applies to here. This UDF is in its concept phase and alot of things are missing and subject to change.
 
 Easy and simple Relay UDF. It Relays whatever comes in to a preset destination, thats it. All of that in a non blocking fashion.
+The UDF is works similiar to the Proxy and Router UDF but uses less code. So this UDF is even more light weight.

@@ -1,3 +1,12 @@
+30.01.2022 (DD/MM/YYYY) 0.2.2
+
+	Added
+		- UDF headers.
+
+	Changes
+		- Moved alot of Functions to the _netcode_AddonCore.au3. So that other Addons can easier use these functions.
+
+
 29.01.2022 (DD/MM/YYYY) 0.2.1
 
 	Fixes

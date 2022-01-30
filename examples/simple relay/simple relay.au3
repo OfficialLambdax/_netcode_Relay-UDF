@@ -10,7 +10,7 @@
 _netcode_Relay_Startup()
 $__net_bTraceEnable = False
 
-; create relay
+; create relay. Open at port 1226, directs all traffic to 127.0.0.1:1225
 _netcode_Relay_Create("0.0.0.0", 1226, "127.0.0.1", 1225)
 
 ; loop it

@@ -8,11 +8,29 @@
 
 	TCP-IPv4, for the time being, only.
 
+	All Sockets are non blocking.
+
+	The proxy will only recv and send data if the send to socket is send ready.
+	It pretty much checks the sockets that have something send to the proxy first
+	and then filters them for the corresponding linked sockets that can be send to.
+
+	So the proxy does not buffer data. Memory usage should therefore be low.
+
 #ce
 
-Global $__net_Relay_sAddonVersion = "0.2.1"
+Global $__net_Relay_sAddonVersion = "0.2.2"
 
 
+; #FUNCTION# ====================================================================================================================
+; Name ..........: _netcode_Relay_Startup
+; Description ...: Needs to be called in order to use the UDF.
+; Syntax ........: _netcode_Relay_Startup()
+; Return values .: True				= Success
+;				 : False			= UDF already started
+; Modified ......:
+; Remarks .......:
+; Example .......: No
+; ===============================================================================================================================
 Func _netcode_Relay_Startup()
 	_netcode_Startup() ; it doesnt matter that it might was already called, because it just returns if it already was
 
@@ -25,6 +43,17 @@ Func _netcode_Relay_Startup()
 	Return True
 EndFunc
 
+
+; #FUNCTION# ====================================================================================================================
+; Name ..........: _netcode_Relay_Shutdown
+; Description ...: ~ todo
+; Syntax ........: _netcode_Relay_Shutdown()
+; Parameters ....: None
+; Return values .: None
+; Modified ......:
+; Remarks .......:
+; Example .......: No
+; ===============================================================================================================================
 Func _netcode_Relay_Shutdown()
 	; closes each and every client and parent and wipes everything clean
 
@@ -32,7 +61,16 @@ Func _netcode_Relay_Shutdown()
 EndFunc
 
 
-; if no socket is given then all parent sockets are looped
+; #FUNCTION# ====================================================================================================================
+; Name ..........: _netcode_Relay_Loop
+; Description ...: Will accept new clients and receive and send data. Needs to be called frequently in order to relay the data.
+; Syntax ........: _netcode_Relay_Loop([$hSocket = False])
+; Parameters ....: $hSocket             - [optional] When set to a Socket, will only loop the given relay socket. Otherwise all.
+; Return values .: None
+; Modified ......:
+; Remarks .......:
+; Example .......: No
+; ===============================================================================================================================
 Func _netcode_Relay_Loop(Const $hSocket = False)
 
 	if $hSocket Then
@@ -48,6 +86,23 @@ Func _netcode_Relay_Loop(Const $hSocket = False)
 EndFunc
 
 
+; #FUNCTION# ====================================================================================================================
+; Name ..........: _netcode_Relay_Create
+; Description ...: Starts a relay parent (aka listener) and returns the socket.
+; Syntax ........: _netcode_Relay_Create($sOpenOnIP, $nOpenOnPort, $sRelayToIP, $nRelayToPort)
+; Parameters ....: $sOpenOnIP           - Relay is open to this IP (set 0.0.0.0 for everyone)
+;                  $nOpenOnPort         - Port to listen
+;                  $sRelayToIP          - Relay to this IP
+;                  $nRelayToPort        - Relay to this Port
+; Return values .: Socket				= If success
+;				 : False				= If not
+; Errors ........: 1					- Listener could not be started
+;				 : 2					- UDF not started yet
+; Extendeds .....: See msdn https://docs.microsoft.com/de-de/windows/win32/winsock/windows-sockets-error-codes-2
+; Modified ......:
+; Remarks .......:
+; Example .......: No
+; ===============================================================================================================================
 Func _netcode_Relay_Create($sOpenOnIP, $nOpenOnPort, $sRelayToIP, $nRelayToPort)
 
 	; start listener
@@ -65,14 +120,8 @@ Func _netcode_Relay_Create($sOpenOnIP, $nOpenOnPort, $sRelayToIP, $nRelayToPort)
 		Return SetError(2, 0, False)
 	EndIf
 
-	; create socket list for the incoming pending clients
-	__netcode_Addon_CreateSocketList($hSocket & '_IncomingPending')
-
-	; create socket list for the outgoing pending clients (aka connect clients)
-	__netcode_Addon_CreateSocketList($hSocket & '_OutgoingPending')
-
-	; create socket list for all clients
-	__netcode_Addon_CreateSocketList($hSocket)
+	; create socket lists
+	__netcode_Addon_CreateSocketLists_InOutRel($hSocket)
 
 	; save relay information
 	Local $arRelayDestination[2] = [$sRelayToIP,$nRelayToPort]
@@ -84,6 +133,17 @@ Func _netcode_Relay_Create($sOpenOnIP, $nOpenOnPort, $sRelayToIP, $nRelayToPort)
 
 EndFunc
 
+
+; #FUNCTION# ====================================================================================================================
+; Name ..........: _netcode_Relay_Close
+; Description ...: ~ todo
+; Syntax ........: _netcode_Relay_Close(Const $hSocket)
+; Parameters ....: $hSocket             - [const] a handle value.
+; Return values .: None
+; Modified ......:
+; Remarks .......:
+; Example .......: No
+; ===============================================================================================================================
 Func _netcode_Relay_Close(Const $hSocket)
 
 	Local $arClients = __netcode_Addon_GetSocketList($hSocket)
@@ -117,248 +177,20 @@ EndFunc
 
 
 
-; accepts new clients
-; connects non blocking to the destination
-; and then adds both together
+
 Func __netcode_Relay_Loop(Const $hSocket)
 
 	; check for new incoming connections. a single per loop
 	Local $hIncomingSocket = __netcode_TCPAccept($hSocket)
-	if $hIncomingSocket <> -1 Then __netcode_Relay_NewIncoming($hSocket, $hIncomingSocket)
+	if $hIncomingSocket <> -1 Then __netcode_Addon_NewIncoming($hSocket, $hIncomingSocket, 0)
 
 	; check pending incoming for disconnects
-;~ 	__netcode_Relay_CheckIncoming($hSocket)
+;~ 	__netcode_Addon_CheckIncoming($hSocket, 0)
 
-	; check pending outgoing for timeouts or successfully connects
-	__netcode_Relay_CheckOutgoing($hSocket)
+	; check pending outgoing for timeouts or successfull connects
+	__netcode_Addon_CheckOutgoing($hSocket, 0)
 
 	; recv and send data
-	__netcode_Relay_RecvAndSend($hSocket)
+	__netcode_Addon_RecvAndSend($hSocket, 0)
 
 EndFunc
-
-Func __netcode_Relay_NewIncoming(Const $hSocket, $hIncomingSocket)
-
-	__netcode_Addon_Log(0, 10, $hIncomingSocket)
-
-	; add to pending list
-	__netcode_Addon_AddToSocketList($hSocket & '_IncomingPending', $hIncomingSocket)
-
-	; get relay destination
-	Local $arRelayDestination = __netcode_Addon_GetVar($hSocket, 'RelayDestination')
-
-	; connect non blocking
-	Local $hOutgoingSocket = __netcode_TCPConnect($arRelayDestination[0], $arRelayDestination[1], 2, True)
-
-	; add to pending list
-	__netcode_Addon_AddToSocketList($hSocket & '_OutgoingPending', $hOutgoingSocket)
-
-	; init timer for timeout
-	__netcode_Addon_SetVar($hOutgoingSocket, 'ConnectTimer', TimerInit())
-
-	; link them already together
-	__netcode_Addon_SetVar($hIncomingSocket, 'Link', $hOutgoingSocket)
-	__netcode_Addon_SetVar($hOutgoingSocket, 'Link', $hIncomingSocket)
-
-	__netcode_Addon_Log(0, 11, $arRelayDestination[0] & ':' & $arRelayDestination[1])
-
-EndFunc
-
-#cs
-Func __netcode_Relay_CheckIncoming(Const $hSocket)
-
-	; get incoming socket list
-	Local $arClients = __netcode_Addon_GetSocketList($hSocket & '_IncomingPending')
-	if UBound($arClients) = 0 Then Return
-
-	; select
-	$arClients = __netcode_SocketSelect($arClients, True)
-	Local $nArSize = UBound($arClients)
-
-	If $nArSize = 0 Then Return
-
-	Local $hOutgoingSocket = 0
-
-	; for each select socket
-	For $i = 0 To $nArSize - 1
-
-		; check connection
-		__netcode_Addon_TCPRecv($arClients[$i], 1)
-
-		; if disconnected then
-		Switch @error
-
-			Case 1, 10050 To 10054
-
-				; get linked outgoing socket
-				$hOutgoingSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
-
-				; close both
-				__netcode_TCPCloseSocket($arClients[$i])
-				__netcode_TCPCloseSocket($hOutgoingSocket)
-
-				; remove the incoming and outgoing socket
-				__netcode_Addon_RemoveFromSocketList($hSocket & '_IncomingPending', $arClients[$i])
-				__netcode_Addon_RemoveFromSocketList($hSocket & '_OutgoingPending', $hOutgoingSocket)
-
-				; tidy both socket vars
-				_storageS_TidyGroupVars($arClients[$i])
-				_storageS_TidyGroupVars($hOutgoingSocket)
-
-		EndSwitch
-
-	Next
-
-EndFunc
-#ce
-
-Func __netcode_Relay_CheckOutgoing(Const $hSocket)
-
-	; get outgoing socket list
-	Local $arClients = __netcode_Addon_GetSocketList($hSocket & '_OutgoingPending')
-	If UBound($arClients) = 0 Then Return
-
-	; select
-	$arClients = __netcode_SocketSelect($arClients, False)
-	Local $nArSize = UBound($arClients)
-	Local $hIncomingSocket = 0
-
-	; if sockets have successfully connected
-	If $nArSize > 0 Then
-
-
-		For $i = 0 To $nArSize - 1
-
-			__netcode_Addon_Log(0, 12, $arClients[$i])
-
-			; get incoming socket
-			$hIncomingSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
-
-			; add both to the clients list
-			__netcode_Addon_AddToSocketList($hSocket, $arClients[$i])
-			__netcode_Addon_AddToSocketList($hSocket, $hIncomingSocket)
-
-			; remove both from the pending lists
-			__netcode_Addon_RemoveFromSocketList($hSocket & '_OutgoingPending', $arClients[$i])
-			__netcode_Addon_RemoveFromSocketList($hSocket & '_IncomingPending', $hIncomingSocket)
-
-			__netcode_Addon_Log(0, 13, $hIncomingSocket, $arClients[$i])
-
-		Next
-
-	EndIf
-
-	; reread the outgoing socket list
-	$arClients = __netcode_Addon_GetSocketList($hSocket & '_OutgoingPending')
-	$nArSize = UBound($arClients)
-
-	if $nArSize = 0 Then Return
-
-	; check timeouts
-	Local $hTimer = 0
-
-	For $i = 0 To $nArSize - 1
-
-		; get timer
-		$hTimer = __netcode_Addon_GetVar($arClients[$i], 'ConnectTimer')
-
-		; check timeout
-		if TimerDiff($hTimer) > 2000 Then
-
-			__netcode_Addon_Log(0, 14, $arClients[$i])
-
-			; get incoming socket
-			$hIncomingSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
-
-			; close both
-			__netcode_TCPCloseSocket($arClients[$i])
-			__netcode_TCPCloseSocket($hIncomingSocket)
-
-			; remove both
-			__netcode_Addon_RemoveFromSocketList($hSocket & '_OutgoingPending', $arClients[$i])
-			__netcode_Addon_RemoveFromSocketList($hSocket & '_IncomingPending', $hIncomingSocket)
-
-			; tidy both
-			_storageS_TidyGroupVars($arClients[$i])
-			_storageS_TidyGroupVars($hIncomingSocket)
-
-			__netcode_Addon_Log(0, 15, $hIncomingSocket)
-
-		EndIf
-
-	Next
-
-EndFunc
-
-Func __netcode_Relay_RecvAndSend(Const $hSocket)
-
-	; get sockets
-	Local $arClients = __netcode_Addon_GetSocketList($hSocket)
-	if UBound($arClients) = 0 Then Return
-
-	; select these that have something received or that are disconnected
-	$arClients = __netcode_SocketSelect($arClients, True)
-	Local $nArSize = UBound($arClients)
-	if $nArSize = 0 Then Return
-
-	; get the linked sockets
-	Local $arSockets[$nArSize]
-	For $i = 0 To $nArSize - 1
-		$arSockets[$i] = __netcode_Addon_GetVar($arClients[$i], 'Link')
-	Next
-
-	; filter the linked sockets, for those that are send ready
-	$arClients = __netcode_SocketSelect($arSockets, False)
-	Local $nArSize = UBound($arClients)
-
-	if $nArSize = 0 Then Return
-
-	Local $sData = ""
-	Local $hLinkSocket = 0
-	Local $nLen = 0
-
-	; recv and send
-	For $i = 0 To $nArSize - 1
-
-		; get the socket that had something to be received
-		$hLinkSocket = __netcode_Addon_GetVar($arClients[$i], 'Link')
-
-		; get the recv buffer
-		$sData = __netcode_Addon_RecvPackages($hLinkSocket)
-
-		; check if we disconnected
-		if @error Then
-
-			__netcode_TCPCloseSocket($arClients[$i])
-			__netcode_TCPCloseSocket($hLinkSocket)
-
-			__netcode_Addon_RemoveFromSocketList($hSocket, $arClients[$i])
-			__netcode_Addon_RemoveFromSocketList($hSocket, $hLinkSocket)
-
-			_storageS_TidyGroupVars($arClients[$i])
-			_storageS_TidyGroupVars($hLinkSocket)
-
-			__netcode_Addon_Log(0, 15, $arClients[$i])
-			__netcode_Addon_Log(0, 15, $hLinkSocket)
-
-			ContinueLoop
-
-		EndIf
-
-		$nLen = @extended
-		If $nLen Then
-
-			__netcode_Addon_Log(0, 16, $hLinkSocket, $arClients[$i], $nLen)
-
-			; send the data non blocking
-			__netcode_TCPSend($arClients[$i], StringToBinary($sData), False)
-
-		EndIf
-
-	Next
-
-EndFunc
-
-
-
-
