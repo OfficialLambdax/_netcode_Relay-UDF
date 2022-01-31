@@ -18,7 +18,10 @@
 
 #ce
 
-Global $__net_Relay_sAddonVersion = "0.2.2"
+Global $__net_Relay_sAddonVersion = "0.2.3"
+Global Const $__net_Relay_sNetcodeOfficialRepositoryURL = "https://github.com/OfficialLambdax/_netcode_Relay-UDF"
+Global Const $__net_Relay_sNetcodeOfficialRepositoryChangelogURL = "https://github.com/OfficialLambdax/_netcode_Relay-UDF/blob/main/%23changelog%20relay.txt"
+Global Const $__net_Relay_sNetcodeVersionURL = "https://raw.githubusercontent.com/OfficialLambdax/_netcode-UDF/main/versions/_netcode_Relay.version"
 
 
 ; #FUNCTION# ====================================================================================================================
@@ -36,6 +39,8 @@ Func _netcode_Relay_Startup()
 
 	Local $arParents = __netcode_Addon_GetSocketList('RelayParents')
 	If IsArray($arParents) Then Return False
+
+	__netcode_UDFVersionCheck($__net_Relay_sNetcodeVersionURL, $__net_Relay_sNetcodeOfficialRepositoryURL, $__net_Relay_sNetcodeOfficialRepositoryChangelogURL, '_netcode_Relay', $__net_Relay_sAddonVersion)
 
 	__netcode_Addon_CreateSocketList('RelayParents')
 
